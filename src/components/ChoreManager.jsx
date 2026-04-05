@@ -1,18 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { Trophy, Plus, CheckCircle } from 'lucide-react';
+import { db, ref, onValue, set } from '../firebase';
 
-export default function ChoreManager({ familyMembers, setFamilyMembers }) {
-  const [chores, setChores] = useState(() => {
-    return JSON.parse(localStorage.getItem('chores')) || [];
-  });
-  
+export default function ChoreManager({ roomId, familyMembers, setFamilyMembers }) {
+  const [chores, setChores] = useState([]);
   const [newChore, setNewChore] = useState('');
   const [choreDiff, setChoreDiff] = useState(10);
   const [choreAssignee, setChoreAssignee] = useState('');
 
   useEffect(() => {
-    localStorage.setItem('chores', JSON.stringify(chores));
-  }, [chores]);
+    if (!roomId) return;
+    const choresRef = ref(db, `rooms/${roomId}/chores`);
+    const unsub = onValue(choresRef, (snapshot) => {
+      const data = snapshot.val();
+      setChores(data || []);
+    });
+    return () => unsub();
+  }, [roomId]);
 
   // Ensure members have points
   const members = (familyMembers || []).map(m => ({ ...m, points: m.points || 0 }));
@@ -27,17 +31,20 @@ export default function ChoreManager({ familyMembers, setFamilyMembers }) {
       assigneeId = sorted[0].id;
     }
     
-    setChores([...chores, { 
+    const updatedChores = [...chores, { 
       id: Date.now().toString(), 
       name: newChore, 
       difficulty: Number(choreDiff), 
       assignee: assigneeId 
-    }]);
+    }];
+    set(ref(db, `rooms/${roomId}/chores`), updatedChores);
     setNewChore('');
   };
 
   const completeChore = (choreId, assigneeId, points) => {
-    setChores(chores.filter(c => c.id !== choreId));
+    const updatedChores = chores.filter(c => c.id !== choreId);
+    set(ref(db, `rooms/${roomId}/chores`), updatedChores);
+    
     if (setFamilyMembers) {
       setFamilyMembers(members.map(r => {
         if (r.id === assigneeId) {

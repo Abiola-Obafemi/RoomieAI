@@ -7,6 +7,7 @@ import MealSuggester from './components/MealSuggester';
 import ArgumentSettler from './components/ArgumentSettler';
 import VibeCheck from './components/VibeCheck';
 import FamilyManager from './components/FamilyManager';
+import { db, ref, onValue, set, messaging, getToken } from './firebase';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -14,14 +15,64 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(!localStorage.getItem('geminiApiKey'));
   const [announcement, setAnnouncement] = useState('Welcome to RoomieAI! Set your Gemini API key in settings to start.');
   
-  const [familyMembers, setFamilyMembers] = useState(() => {
-    const saved = localStorage.getItem('familyMembers');
-    return saved ? JSON.parse(saved) : [{ id: '1', name: 'User', role: 'Admin', avatar: '👨‍🦱' }];
+  const [inputRoomId, setInputRoomId] = useState('');
+  const [roomId, setRoomId] = useState(() => {
+    let savedRoomId = localStorage.getItem('roomId');
+    if (!savedRoomId) {
+      savedRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+      localStorage.setItem('roomId', savedRoomId);
+    }
+    return savedRoomId;
   });
 
+  const [familyMembers, setFamilyMembers] = useState([]);
+
   useEffect(() => {
-    localStorage.setItem('familyMembers', JSON.stringify(familyMembers));
-  }, [familyMembers]);
+    if (!roomId) return;
+    
+    const familyRef = ref(db, `rooms/${roomId}/familyMembers`);
+    const unsubFamily = onValue(familyRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setFamilyMembers(data);
+      } else {
+        const initialMembers = [{ id: '1', name: 'User', role: 'Admin', avatar: '👨‍🦱', points: 0 }];
+        set(familyRef, initialMembers);
+      }
+    });
+
+    const announcementRef = ref(db, `rooms/${roomId}/announcement`);
+    const unsubAnnouncement = onValue(announcementRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data !== null) {
+        setAnnouncement(data);
+      }
+    });
+
+    return () => {
+      unsubFamily();
+      unsubAnnouncement();
+    };
+  }, [roomId]);
+
+  const updateFamilyMembers = (newMembers) => {
+    setFamilyMembers(newMembers);
+    set(ref(db, `rooms/${roomId}/familyMembers`), newMembers);
+  };
+
+  const updateAnnouncement = (val) => {
+    setAnnouncement(val);
+    set(ref(db, `rooms/${roomId}/announcement`), val);
+  };
+
+  const joinRoom = () => {
+    if (inputRoomId.trim()) {
+      localStorage.setItem('roomId', inputRoomId.trim().toUpperCase());
+      setRoomId(inputRoomId.trim().toUpperCase());
+      setInputRoomId('');
+      setShowSettings(false);
+    }
+  };
 
   const saveApiKey = (key) => {
     localStorage.setItem('geminiApiKey', key);
@@ -32,18 +83,31 @@ export default function App() {
   const testNotification = async () => {
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
+      try {
+        const currentToken = await getToken(messaging, { vapidKey: 'BGBWoY1AUed2RWu2Cs-UhUz7prNYdWBEqKABi0bKKilMa0jz6XA_2IeNzlObktU0y_qVo9QspQYrtVDQ5NUAwPU' });
+        if (currentToken) {
+          console.log('FCM Token:', currentToken);
+          // Here you would normally send the token to your server / DB to target this device
+          await set(ref(db, `rooms/${roomId}/fcmTokens/${currentToken}`), true);
+        } else {
+          console.log('No registration token available. Request permission to generate one.');
+        }
+      } catch (err) {
+        console.log('An error occurred while retrieving token. ', err);
+      }
+
       if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
         navigator.serviceWorker.ready.then(reg => {
-          reg.showNotification('RoomieAI Test', {
-            body: 'Notifications are working perfectly!',
-            icon: '/logo.png',
-            badge: '/logo.png'
+          reg.showNotification('RoomieAI Sync Active', {
+            body: 'You will now receive automatic synced pushes!',
+            icon: '/icon-192x192.png',
+            badge: '/icon-192x192.png'
           });
         });
       } else {
-        new Notification('RoomieAI Test', {
-          body: 'Notifications are working perfectly!',
-          icon: '/logo.png'
+        new Notification('RoomieAI Sync Active', {
+          body: 'You will now receive automatic synced pushes!',
+          icon: '/icon-192x192.png'
         });
       }
     }
@@ -154,16 +218,17 @@ export default function App() {
                     className="input-field" 
                     placeholder="Type an announcement to scroll at the top..." 
                     value={announcement}
-                    onChange={(e) => setAnnouncement(e.target.value)}
+                    onChange={(e) => updateAnnouncement(e.target.value)}
                   />
                   <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem', fontSize: '0.85rem' }}>
-                    Type something to show the marquee across the home.
+                    Type something to show the marquee across the home. Syncs instantly with all family members.
                   </p>
                 </div>
               </div>
             )}
-            {activeTab === 'family' && <FamilyManager familyMembers={familyMembers} setFamilyMembers={setFamilyMembers} />}
-            {activeTab === 'chores' && <ChoreManager familyMembers={familyMembers} setFamilyMembers={setFamilyMembers} />}
+            {activeTab === 'family'}
+            {activeTab === 'family' && <FamilyManager familyMembers={familyMembers} setFamilyMembers={updateFamilyMembers} />}
+            {activeTab === 'chores' && <ChoreManager roomId={roomId} familyMembers={familyMembers} setFamilyMembers={updateFamilyMembers} />}
             {activeTab === 'meals' && <MealSuggester />}
             {activeTab === 'argument' && <ArgumentSettler />}
             {activeTab === 'vibe' && <VibeCheck />}
@@ -208,9 +273,26 @@ export default function App() {
             <h2 className="title" style={{ fontSize: '1.4rem', marginBottom: '0.75rem' }}>Settings</h2>
             
             <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1.5rem', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <h4 style={{ fontSize: '0.95rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Family Sync (Room)</h4>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.85rem' }}>
+                Your current Room ID is <strong style={{ color: 'var(--accent-primary-hover)', fontSize: '1.1rem', letterSpacing: '1px' }}>{roomId}</strong>. Share this code with your family members to sync your home!
+              </p>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input 
+                  className="input-field" 
+                  placeholder="Enter a Room ID to join..." 
+                  value={inputRoomId}
+                  onChange={(e) => setInputRoomId(e.target.value)}
+                  style={{ marginBottom: 0 }}
+                />
+                <button className="btn btn-secondary" onClick={joinRoom} disabled={!inputRoomId.trim()}>Join</button>
+              </div>
+            </div>
+
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1.5rem', border: '1px solid rgba(255,255,255,0.05)' }}>
               <h4 style={{ fontSize: '0.95rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Notifications</h4>
               <button className="btn btn-secondary" onClick={testNotification} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-                <Bell size={18} /> Test Push Notification
+                <Bell size={18} /> Enable & Test Notifications
               </button>
             </div>
 
